@@ -1036,6 +1036,15 @@ def _select_sdpa_tiling(
             # the map boundary. Requiring more means DWSRS did not right-size
             # the working set.
             if plan.estimated_spill_buffers <= 1
+            # torch.compile compiles 3 scan loops (head, Q, KV) at tracing time via
+            # scan._maybe_compile_and_run_fn.  >=3 levels of nested
+            # recompilation exceeds python's default recursion limit.
+            # Exclude plans where all three loop counts are > 1.
+            and not (
+                plan.num_head_tiles > 1
+                and plan.num_q_tiles > 1
+                and plan.kv.num_blocks > 1
+            )
         ]
         for plan in plans:
             logger.debug(
@@ -1866,6 +1875,12 @@ def spyre__sdpa_overrideable(
         if use_gqa
         else query.contiguous()
     )
+    # A transposed V (e.g. after v.transpose(1, 2)) arrives
+    # with non-dense H-axis strides, which would
+    # inflate `head_tile_staging_bytes` and bias the cost model toward more
+    # head tiles. Keep it dense by making V contiguous, avoids deeply nested
+    # head tiles leading to exceeding scan traverse recursion limit.
+    value = value.contiguous()
     if use_gqa:
         query = query.unflatten(1, (num_kvheads, gqa_group_size))
 
